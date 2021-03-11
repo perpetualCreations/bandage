@@ -8,11 +8,12 @@ from hashlib import md5
 from time import time
 from tempfile import gettempdir
 from os import mkdir, path
-from shutil import unpack_archive, copy
+from shutil import unpack_archive, copy, make_archive, rmtree
 from io import StringIO
 from contextlib import redirect_stdout
 from json import load as jsonload
 from json import dump as jsondump
+from typing import Union
 import urllib3
 import filecmp
 
@@ -43,6 +44,17 @@ class Exceptions:
         """
         Raised when a user-defined release file is invalid (i.e. is not a compressed archive such as zip or tar.gz, file cannot be uncompressed).
         """
+    class ReleaseNameError(BaseException):
+        """
+        Raised when releases have different NAME files or are missing NAME files.
+        This is indicative of a inconsistent release continuum, the releases are for two different software applications, or they're simply undefined.
+        """
+    class MissingVersionsError(BaseException):
+        """
+        Raised when releases are missing VERSION files.
+        This can be suppressed by initializing the Weave class with suppress_missing_versions as True.
+        If the patch is made with versions left unspecified, the Supply class cannot detect the release automatically, Patcher must be directed to the patch archive manually.
+        """
 
 class Patcher:
     """
@@ -55,11 +67,14 @@ class Weave:
     """
     Main class for bandage.weave instances, which generates patches.
     """
-    def __init__(self, release_old, release_new):
+    def __init__(self, release_old: str, release_new: str, output_path: str, set_name: Union[str, None] = None, suppress_missing_versions: bool = False):
         """
         Takes two release files, and compares them for differences.
         :param release_old: str, web address or path to old release file
         :param release_new: str, web address or path to new release file
+        :param output_path: str, path to output archive, if archive already exists, deletes archive and "overwrites" it with the new archive file
+        :param set_name: Union[str, None], new patch NAME file, if not None, NAME check is ignored, default None
+        :param suppress_missing_versions: bool, default False, if True missing versions error is ignored
         """
         self.urllib3_pool_manager = urllib3.PoolManager()
         self.WORK_DIR = Weave.create_work_directory()
@@ -80,13 +95,38 @@ class Weave:
         unpack_archive(self.release_old, gettempdir() + self.WORK_DIR + "/old/")
         unpack_archive(self.release_new, gettempdir() + self.WORK_DIR + "/new/")
 
+        try:
+            with open(gettempdir() + self.WORK_DIR + "/old/NAME") as release_name_handle: self.release_name_old = release_name_handle.read()
+            with open(gettempdir() + self.WORK_DIR + "/new/NAME") as release_name_handle: self.release_name_new = release_name_handle.read()
+            if self.release_name_new != self.release_name_old and set_name is None: raise Exceptions.ReleaseNameError("NAME files of old and new releases do not match.")
+        except FileNotFoundError:
+            if set_name is not None: raise Exceptions.ReleaseNameError("NAME files of old and new releases are missing.")
+
+        try:
+            with open(gettempdir() + self.WORK_DIR + "/old/VERSION") as release_version_handle: self.release_version_old = release_version_handle.read()
+            with open(gettempdir() + self.WORK_DIR + "/new/VERSION") as release_version_handle: self.release_version_new = release_version_handle.read()
+        except FileNotFoundError:
+            if suppress_missing_versions is False: raise Exceptions.MissingVersionsError("VERSION files of old and new releases are missing.")
+            else:
+                self.release_version_old = "NaN"
+                self.release_version_new = "NaN"
+
         self.index = Weave.comparison(self)
 
-        with open(gettempdir() + self.WORK_DIR + "/patch/CHANGE.json") as changelog_dump_handle: jsondump({"remove":str(self.index[0]), "add":str(self.index[1]), "keep":str(self.index[2]), "replace":str(self.index[3])}, changelog_dump_handle)
+        with open(gettempdir() + self.WORK_DIR + "/patch/CHANGE.json", "w") as changelog_dump_handle: jsondump({"remove":str(self.index[0]), "add":str(self.index[1]), "keep":str(self.index[2]), "replace":str(self.index[3])}, changelog_dump_handle)
 
         for x in range(0, len(self.index[1])): copy(gettempdir() + self.WORK_DIR + "/new/" + self.index[1][x], gettempdir() + self.WORK_DIR + "/patch/add/" + self.index[1][x])
         for y in range(0, len(self.index[3])): copy(gettempdir() + self.WORK_DIR + "/new/" + self.index[3][y], gettempdir() + self.WORK_DIR + "/patch/replace/" + self.index[3][y])
 
+        with open(gettempdir() + self.WORK_DIR + "/patch/VERSIONS", "w") as release_version_handle: release_version_handle.write(self.release_version_old + " -> " + self.release_version_new)
+        if set_name is None:
+            with open(gettempdir() + self.WORK_DIR + "/patch/NAME", "w") as release_name_handle: release_name_handle.write(self.release_name_new)
+            make_archive(base_dir = output_path, base_name = self.release_name_new + "_" + self.release_name_old + "_to_" + self.release_name_new + "_bandage_patch", format = ".zip")
+        else:
+            with open(gettempdir() + self.WORK_DIR + "/patch/NAME", "w") as release_name_handle: release_name_handle.write(set_name)
+            make_archive(base_dir = output_path, base_name = set_name + "_" + self.release_name_old + "_to_" + self.release_name_new + "_bandage_patch", format = ".zip")
+
+        rmtree(gettempdir() + self.WORK_DIR) # turns out Windows doesn't automatically clear out the temp directory! (https://superuser.com/questions/296824/when-is-a-windows-users-temp-directory-cleaned-out)
 
     def fetch(self, target: str) -> object:
         """
@@ -95,8 +135,7 @@ class Weave:
         :return: object
         """
         fetch_request = self.urllib3_pool_manager.request("GET", target)
-        if str(fetch_request.status)[:1] is not "2" and fetch_request.status not in [301, 302]:
-            raise Exceptions.WeaveFetchError("Failed to fetch resource, returned status code " + str(fetch_request.status) + ".")
+        if str(fetch_request.status)[:1] is not "2" and fetch_request.status not in [301, 302]: raise Exceptions.WeaveFetchError("Failed to fetch resource, returned status code " + str(fetch_request.status) + ".")
         else: return fetch_request
 
     @staticmethod
