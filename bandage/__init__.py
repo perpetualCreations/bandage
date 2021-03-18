@@ -35,6 +35,8 @@ class dircmp(filecmp.dircmp):
 class Exceptions:
     """
     Class with exceptions for bandage nested under.
+
+    TODO REFACTOR, HEAVILY VERBOSE
     """
     class FetchError(BaseException):
         """
@@ -64,7 +66,7 @@ class Exceptions:
     class VersionsError(BaseException):
         """
         Raised when patch archive and/or target directory have invalid (i.e. unreadable or undefined version values, version upgrading listed in patch archive being different from target), or missing VERSION files.
-        Intended for bandage.Patcher only.
+        Intended for bandage.Patcher, is also raised by bandage.Supply when target VERSION file does not exist.
         This can be suppressed by initializing the Patcher class with suppress_version_check as True.
         """
     class MissingChangeDataError(BaseException):
@@ -87,6 +89,30 @@ class Exceptions:
     class PatchMissingReplacements(BaseException):
         """
         Raised when bandage.Patcher finds files or directories listed under the "replace" list that are missing from the patch archive.
+        """
+    class PatchNotFound(BaseException):
+        """
+        Raised when patch defined for bandage.Patcher does not exist, or if patch repo targeted for bandage.Supply does not exist.
+        """
+    class PatchTargetInvalid(BaseException):
+        """
+        Raised when target directory defined for bandage.Patcher does not exist.
+        """
+    class ReleaseNotFound(BaseException):
+        """
+        Raised when target releases for bandage.Weave does not exist.
+        """
+    class RemoteNotHTTP(BaseException):
+        """
+        Raised when defined remote for bandage.Supply is not an HTTP or HTTPS address.
+        """
+    class RemoteNotSupported(BaseException):
+        """
+        Raised when defined remote for bandage.Supply is not supported.
+        """
+    class VersionMissingFromRemoteLineage(BaseException):
+        """
+        Raised when defined remote's lineage header does not contain supplied current version.
         """
 
 class Patcher:
@@ -113,6 +139,10 @@ class Patcher:
             patch_grab = Patcher.fetch(self, patch)
             with open(gettempdir() + self.WORK_DIR + self.patch.path.splitext()[1], "w") as patch_data_dump: patch_data_dump.write(patch_grab.data)
             self.patch = gettempdir() + self.WORK_DIR + self.patch.splitext()[1]
+        else:
+            if path.isfile(self.patch) is False: raise Exceptions.PatchNotFound("Patch file with path " + self.patch + " does not exist.")
+
+        if path.isdir(self.target) is False: raise Exceptions.PatchTargetInvalid("Target directory " + self.target + " does not exist.")
 
         unpack_archive(self.patch, gettempdir() + self.WORK_DIR)
 
@@ -209,11 +239,15 @@ class Weave:
             release_old_grab = Weave.fetch(self, self.release_old)
             with open(gettempdir() + self.WORK_DIR + "/old/" + self.release_old.path.splitext()[1], "w") as release_old_data_dump: release_old_data_dump.write(release_old_grab.data)
             self.release_old = gettempdir() + self.WORK_DIR + "/old/" + self.release_old.path.splitext()[1]
+        else:
+            if path.isfile(self.release_old) is False: raise Exceptions.ReleaseNotFound("Old release file " + self.release_old + " does not exist.")
 
         if "https://" in self.release_new[:8] or "http://" in self.release_new[:8]:
             release_new_grab = Weave.fetch(self, self.release_new)
             with open(gettempdir() + self.WORK_DIR + "/new/" + self.release_new.path.splitext()[1], "w") as release_new_data_dump: release_new_data_dump.write(release_new_grab.data)
             self.release_new = gettempdir() + self.WORK_DIR + "/new/" + self.release_new.path.splitext()[1]
+        else:
+            if path.isfile(self.release_new) is False: raise Exceptions.ReleaseNotFound("New release file " + self.release_new + " does not exist.")
 
         unpack_archive(self.release_old, gettempdir() + self.WORK_DIR + "/old/")
         unpack_archive(self.release_new, gettempdir() + self.WORK_DIR + "/new/")
@@ -313,5 +347,100 @@ class Supply:
     """
     Main class for bandage.Supply instances, which checks for new patches on remotes.
     """
-    def __init__(self):
-        pass
+    def __init__(self, remote: str, version_file: str):
+        """
+        Checks a remote HTTP endpoint for new patches. Inorganic and for robots.
+        If no exception is thrown, dumps status and patch download URL to self.result and self.patch_web_source respectively, which can be retrieved as a list through method bandage.Supply.realize.
+
+        If the remote is a repository on raw.githubusercontent.com, looks through repository contents for headers and patch files.
+        It will be treated as a normal web server request. The remote URL should point to the correct branch and patch directory ot root.
+        If the previous provision fails, throws Exceptions.RemoteInvalid.
+
+        If the remote is a repository on github.com, looks for a release tagged "BANDAGE" for patch files and headers.
+        If the previous provision fails, throws Exceptions.RemoteInvalid.
+
+        If the endpoint is not a Github repository, bandage.Supply assumes the remote is a normal web server.
+        bandage.Supply will request BANDAGE_PATCHES and BANDAGE_LINEAGE (it will literally append those files to the remote string parameter).
+        It will retrieve a list of patches from BANDAGE_PATCHES, lookup the current version with BANDAGE_LINEAGE and trace the next version in series (hence, lineage).
+        BANDAGE_LINEAGE release series will then be looked up in BANDAGE_PATCHES, for the patch that brings the current version to the most latest release.
+
+        If bandage.Supply succeeded in finding headers and looking up lineage series, however finds the current version to be the latest, self.result is 0.
+        If bandage.Supply succeeded in finding headers and looking up lineage series, and finds a patch to be applied for updating, self.result is -1 with self.patch_web_source as web address to patch file.
+        If bandage.Supply succeeded in finding headers and looking up lineage series, however finds no patch available to upgrade with, self.result is 1.
+        If bandage.Supply raised an exception, self.result and self.patch_web_source are None.
+
+        Preliminary information if obtained is dumped into self.preliminary_dump. Contains version list and patches available, as list object. Retrieved through bandage.Supply.pre_collect.
+
+        See documentation for more information.
+
+        TODO cleanup doc strings
+
+        :param remote: str, web address of patch host
+        :param version_file: str, path to version file
+        """
+        self.urllib3_pool_manager = urllib3.PoolManager()
+
+        self.remote = remote
+        self.version_file = version_file
+
+        try:
+            with open(version_file) as version_handle: self.version = version_handle.read()
+        except FileNotFoundError as ParentException: raise Exceptions.VersionsError("VERSION file directed by path " + self.version_file + " does not exist.") from ParentException
+
+        if "https://" not in self.remote[:8] and "http://" not in self.remote[:8]: raise Exceptions.RemoteNotHTTP("Supplied remote " + self.remote + " is not a HTTP/HTTPS web address.")
+
+        if self.remote[-1:] != "/": self.remote += "/"
+
+        if "https://github.com" == self.remote[:18] or "http://github.com" == self.remote[:18]:
+            if self.remote[-18] == "/releases/BANDAGE/":
+                self.pre_collect = [Supply.fetch(self, self.remote.rstrip("/BANDAGE/") + "/download/BANDAGE/BANDAGE_PATCHES").data.decode(encoding = "utf-8", errors = "replace").split("\n"), Supply.fetch(self, self.remote.rstrip("/BANDAGE/") + "/download/BANDAGE/BANDAGE_LINEAGE").data.decode(encoding = "utf-8", errors = "replace").split("\n")]
+                for x in range(0, len(self.pre_collect[1])):
+                    if self.version == self.pre_collect[1][x]:
+                        self.version_gap = x
+                        break
+                if self.version_gap is None: raise Exceptions.VersionMissingFromRemoteLineage("Version " + self.version + " does not exist in remote's lineage header.")
+                elif self.version_gap == 0: self.result = 0
+                else:
+                    compatible_sources = []
+                    for x in range(0, len(self.pre_collect[0])):
+                        if self.pre_collect[0][x].split("||")[0].split(" -> ")[0] == self.version: compatible_sources.append(self.pre_collect[0][x].split("||")[0])
+                    if not compatible_sources: self.result = 1
+                    else:
+                        for x in range(0, self.version_gap):
+                            for y in compatible_sources:
+                                if y.split(" -> ")[1] == self.pre_collect[x]:
+                                    self.result = -1
+                                    self.patch_web_source = self.remote.rstrip("/BANDAGE/") + "/download/BANDAGE/" + self.pre_collect[0][x].split("||")[1]
+            else: raise Exceptions.RemoteNotSupported("Remote defined as " + self.remote + " is not supported.")
+        else:
+            self.pre_collect = [Supply.fetch(self, self.remote + "BANDAGE_PATCHES").data.decode(encoding = "utf-8", errors = "replace").split("\n"), Supply.fetch(self, self.remote + "BANDAGE_LINEAGE").data.decode(encoding = "utf-8", errors = "replace").split("\n")]
+            for x in range(0, len(self.pre_collect[1])):
+                if self.version == self.pre_collect[1][x]:
+                    self.version_gap = x
+                    break
+            if self.version_gap is None: raise Exceptions.VersionMissingFromRemoteLineage("Version " + self.version + " does not exist in remote's lineage header.")
+            elif self.version_gap == 0: self.result = 0
+            else:
+                compatible_sources = []
+                for x in range(0, len(self.pre_collect[0])):
+                    if self.pre_collect[0][x].split("||")[0].split(" -> ")[0] == self.version: compatible_sources.append(self.pre_collect[0][x].split("||")[0])
+                if not compatible_sources: self.result = 1
+                else:
+                    for x in range(0, self.version_gap):
+                        for y in compatible_sources:
+                            if y.split(" -> ")[1] == self.pre_collect[x]:
+                                self.result = -1
+                                if self.pre_collect[0][x].split("||")[1][:8] == "https://" or "http://" in self.pre_collect[0][x].split("||")[1][:8]: self.patch_web_source = self.pre_collect[0][x].split("||")[1]
+                                else:
+                                    if self.pre_collect[0][x].split("||")[1][:1] != "/": self.remote = self.remote.rstrip("/")
+                                    self.patch_web_source = self.remote + self.pre_collect[0][x].split("||")[1]
+
+    def fetch(self, target: str) -> object:
+        """
+        Fetches HTTP and HTTPS requests through URLLIB3, returns request object, raises exception if status is not in 2XX or 301, 302.
+        :param target:
+        :return: object
+        """
+        fetch_request = self.urllib3_pool_manager.request("GET", target)
+        if str(fetch_request.status)[:1] is not "2" and fetch_request.status not in [301, 302]: raise Exceptions.FetchError("Failed to fetch resource, returned status code " + str(fetch_request.status) + ".") from None
+        else: return fetch_request
