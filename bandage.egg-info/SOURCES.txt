@@ -1,0 +1,8 @@
+README.md
+setup.py
+bandage/__init__.py
+bandage.egg-info/PKG-INFO
+bandage.egg-info/SOURCES.txt
+bandage.egg-info/dependency_links.txt
+bandage.egg-info/requires.txt
+bandage.egg-info/top_level.txt
