@@ -7,8 +7,8 @@ from platform import system
 from hashlib import md5
 from time import time
 from tempfile import gettempdir
-from os import mkdir, path, remove
-from shutil import unpack_archive, copy, make_archive, rmtree
+from os import mkdir, path, remove, listdir
+from shutil import unpack_archive, copyfile, make_archive, rmtree, copytree
 from io import StringIO
 from contextlib import redirect_stdout
 from json import load as jsonload
@@ -31,6 +31,13 @@ class dircmp(filecmp.dircmp):
         """
         fcomp = filecmp.cmpfiles(self.left, self.right, self.common_files, shallow=False)
         self.same_files, self.diff_files, self.funny_files = fcomp
+
+class Backend:
+    """
+    TODO move fetch and other shared backend functions into this class
+    """
+    def __init__(self):
+        raise NotImplementedError("Backend class is not implemented.")
 
 class Exceptions:
     """
@@ -142,7 +149,7 @@ class Patcher:
         else:
             if path.isfile(self.patch) is False: raise Exceptions.PatchNotFound("Patch file with path " + self.patch + " does not exist.")
 
-        if path.isdir(self.target) is False: raise Exceptions.PatchTargetInvalid("Target directory " + self.target + " does not exist.")
+        if path.isdir(self.target) is False or not listdir(self.target): raise Exceptions.PatchTargetInvalid("Target directory " + self.target + " does not exist or is empty.")
 
         unpack_archive(self.patch, gettempdir() + self.WORK_DIR)
 
@@ -157,8 +164,8 @@ class Patcher:
             if suppress_version_check is False:
                 with open(gettempdir() + self.WORK_DIR + "/VERSIONS") as versions_handle: patch_versions = versions_handle.read()
                 self.patch_versions = patch_versions.split(" -> ")
-                with open(target + "/VERSION") as version_handle:
-                    if version_handle.read() != self.patch_versions[0]: raise Exceptions.VersionsError("VERSIONS file specifies a different upgrade-from version compared to the target VERSION file. Target is on " + version_handle.read() + ", and patch supporting " + self.patch_versions[0] + ".")
+                with open(path.join(target, "VERSION")) as version_handle: current_version = version_handle.read()
+                if current_version != self.patch_versions[0]: raise Exceptions.VersionsError("VERSIONS file specifies a different upgrade-from version compared to the target VERSION file. Target is on " + current_version + ", and patch supporting " + self.patch_versions[0] + ".")
         except FileNotFoundError as ParentException: raise Exceptions.VersionsError("Missing VERSION(S) file(s).") from ParentException
 
         try:
@@ -167,30 +174,41 @@ class Patcher:
 
         for x in self.change:
             self.change[x] = self.change[x].strip("[]").split(", ")
-            for y in self.change[x]: self.change[x][y] = self.change[x][y].strip("'")
+            for y in range(0, len(self.change[x])): self.change[x][y] = self.change[x][y].strip("'")
 
         if skip_keep_check is False:
             for x in range(0, len(self.change["keep"])):
-                if path.isdir(self.target + "/" + self.change["keep"][x]) is not True and path.isfile(self.target + "/" + self.change["keep"][x]) is not True: raise Exceptions.TargetMissingKeeps("Target missing item(s) that should exist, listed under the keep operation. Raised on " + self.change["keep"][x] + ".")
+                if path.isdir(path.join(self.target, self.change["keep"][x])) is not True and path.isfile(path.join(self.target, self.change["keep"][x])) is not True: raise Exceptions.TargetMissingKeeps("Target missing item(s) that should exist, listed under the keep operation. Raised on " + self.change["keep"][x] + ".")
 
         for x in range(0, len(self.change["add"])):
-            if path.isdir(gettempdir() + self.WORK_DIR + "/patch/add/" + self.change["add"][x]) is not True and path.isfile(gettempdir() + self.WORK_DIR + "/patch/add" + self.change["add"][x]) is not True: raise Exceptions.PatchMissingAdditions("Missing item(s) for addition. Raised on " + self.change["add"][x] + ".")
+            if path.isdir(gettempdir() + self.WORK_DIR + "/add/" + self.change["add"][x]) is not True and path.isfile(gettempdir() + self.WORK_DIR + "/add/" + self.change["add"][x]) is not True: raise Exceptions.PatchMissingAdditions("Missing item(s) for addition. Raised on " + self.change["add"][x] + ".")
 
         for x in range(0, len(self.change["replace"])):
-            if path.isdir(gettempdir() + self.WORK_DIR + "/patch/replace/" + self.change["replace"][x]) is not True and path.isfile(gettempdir() + self.WORK_DIR + "/patch/replace" + self.change["replace"][x]) is not True: raise Exceptions.PatchMissingReplacements("Missing item(s) for replacement. Raised on " + self.change["replace"][x] + ".")
+            if path.isdir(gettempdir() + self.WORK_DIR + "/replace/" + self.change["replace"][x]) is not True and path.isfile(gettempdir() + self.WORK_DIR + "/replace/" + self.change["replace"][x]) is not True: raise Exceptions.PatchMissingReplacements("Missing item(s) for replacement. Raised on " + self.change["replace"][x] + ".")
 
-        for x in range(0, len(self.change["add"])): copy(gettempdir() + self.WORK_DIR + "/patch/add/" + self.change["add"][x], self.target + "/" + path.dirname(self.change["add"][x]))
+        for x in range(0, len(self.change["add"])):
+            component = Patcher.directory_split_recursive(self.change["add"][x])
+            for a in component:
+                if path.isdir(path.join(self.target, a)) is False: mkdir(path.join(self.target, a))
+            if path.isfile(gettempdir() + self.WORK_DIR + "/add/" + self.change["add"][x]): copyfile(gettempdir() + self.WORK_DIR + "/add/" + self.change["add"][x], path.join(self.target, self.change["add"][x]))
+            if path.isdir(gettempdir() + self.WORK_DIR + "/add/" + self.change["add"][x]): copytree(gettempdir() + self.WORK_DIR + "/add/" + self.change["add"][x], path.join(self.target, self.change["add"][x]))
 
         for x in range(0, len(self.change["replace"])):
-            if path.isdir(self.target + "/" + self.change["replace"][x]) is True or path.isfile(self.target + "/" + self.change["replace"][x]) is True: remove(self.target + "/" + self.change["replace"][x])
-            copy(gettempdir() + self.WORK_DIR + "/patch/replace/" + self.change["replace"][x], self.target + "/" + path.dirname(self.change["replace"][x]))
+            if path.isfile(path.join(self.target, self.change["replace"][x])) is True:
+                remove(path.join(self.target, self.change["replace"][x]))
+                copyfile(gettempdir() + self.WORK_DIR + "/replace/" + self.change["replace"][x], path.join(self.target, self.change["replace"][x]))
+            elif path.isdir(path.join(self.target, self.change["replace"][x])) is True:
+                rmtree(path.join(self.target, self.change["replace"][x]))
+                copytree(gettempdir() + self.WORK_DIR + "/replace/" + self.change["replace"][x], path.join(self.target, self.change["replace"][x]))
+            else: raise FileNotFoundError("Target " + self.change["replace"][x] + " for replacement does not exist.") # TODO needs proper exception name, create during refactoring
 
+        # TODO add handles if target does not exist
         for x in range(0, len(self.change["remove"])):
-            if path.isdir(self.change["remove"][x]) is True: rmtree(self.target + "/" + self.change["remove"][x])
-            if path.isfile(self.change["remove"][x]) is True: remove(self.target + "/" + self.change["remove"][x])
+            if path.isdir(path.join(self.target, self.change["remove"][x])) is True: rmtree(path.join(self.target, self.change["remove"][x]))
+            if path.isfile(path.join(self.target, self.change["remove"][x])) is True: remove(path.join(self.target, self.change["remove"][x]))
 
-        with open(self.target + "/VERSION", "w") as version_overwrite_handle:
-            version_overwrite_handle.truncate(0)
+        with open(self.target + "/VERSION", "w") as version_overwrite_handle: # this is redundant, VERSION gets overwritten by replace anyways, since Weave detects two different version files automatically
+            version_overwrite_handle.truncate(0)                              # if one day this module needed to be slimmed down, remove this for a slight amount of I/O performance gain
             version_overwrite_handle.write(self.patch_versions[1])
 
         rmtree(gettempdir() + self.WORK_DIR)
@@ -212,9 +230,27 @@ class Patcher:
         Returns generated name.
         :return: str, generated tempdir name
         """
-        identifier = "/bandage_patcher_session_" + md5(str(time()).encode(encoding = "ascii", errors = "replace")).decode(encoding = "utf-8", errors = "replace")
+        identifier = "/bandage_patcher_session_" + md5(str(time()).encode(encoding = "ascii", errors = "replace")).hexdigest()
         mkdir(gettempdir() + identifier)
         return identifier
+
+    @staticmethod
+    def directory_split_recursive(whole: str) -> list:
+        """
+        Takes path parameter and applies path.split recursively, dumps spliced directory tree to return variable.
+        It will produce segmented directories, i.e:
+        /path/to/somewhere/ -> /path/to -> /path/
+        ...Which will be appended to the return list as mentioned previously.
+        :param whole: str, path for splitting into component directories
+        :return: list, contains components
+        """
+        dump = [] # append components to this list, function return
+        previous = "/INITIAL/INITIAL" # remaining path after splitting previous component
+        while path.split(previous)[1] != "":
+            if previous == "/INITIAL/INITIAL": previous = path.split(whole)[0]
+            else: previous = path.split(previous)[0]
+            if previous != "/": dump.append(previous)
+        return dump
 
 class Weave:
     """
@@ -234,6 +270,8 @@ class Weave:
 
         self.release_old = release_old
         self.release_new = release_new
+
+        if path.isdir(output_path) is False: raise Exception("Specified output directory " + output_path + " is not a directory.") # TODO create a dedicated exception for this scenario when refactoring exceptions
 
         if "https://" in self.release_old[:8] or "http://" in self.release_old[:8]:
             release_old_grab = Weave.fetch(self, self.release_old)
@@ -268,22 +306,33 @@ class Weave:
                 self.release_version_old = "NaN"
                 self.release_version_new = "NaN"
 
-        if suppress_missing_versions is False and len(self.release_version_old.split(" -> ")) != 0 or len(self.release_version_new.split(" -> ")) != 0: raise Exceptions.UnableToParseError('Release versions contain " -> " which will disrupt Patcher when trying to read the VERSIONS header.')
+        if suppress_missing_versions is False and len(self.release_version_old.split(" -> ")) != 1 or len(self.release_version_new.split(" -> ")) != 1: raise Exceptions.UnableToParseError('Release versions contain " -> " which will disrupt Patcher when trying to read the VERSIONS header.')
 
         self.index = Weave.comparison(self)
 
         with open(gettempdir() + self.WORK_DIR + "/patch/CHANGE.json", "w") as changelog_dump_handle: jsondump({"remove":str(self.index[0]), "add":str(self.index[1]), "keep":str(self.index[2]), "replace":str(self.index[3])}, changelog_dump_handle)
 
-        for x in range(0, len(self.index[1])): copy(gettempdir() + self.WORK_DIR + "/new/" + self.index[1][x], gettempdir() + self.WORK_DIR + "/patch/add/" + self.index[1][x])
-        for y in range(0, len(self.index[3])): copy(gettempdir() + self.WORK_DIR + "/new/" + self.index[3][y], gettempdir() + self.WORK_DIR + "/patch/replace/" + self.index[3][y])
+        for x in range(0, len(self.index[1])):
+            component = Weave.directory_split_recursive(self.index[1][x])
+            for a in component:
+                if path.isdir(gettempdir() + self.WORK_DIR + "/patch/add/" + a) is False: mkdir(gettempdir() + self.WORK_DIR + "/patch/add/" + a)
+            if path.isfile(gettempdir() + self.WORK_DIR + "/new/" + self.index[1][x]) is True: copyfile(gettempdir() + self.WORK_DIR + "/new/" + self.index[1][x], gettempdir() + self.WORK_DIR + "/patch/add/" + self.index[1][x])
+            if path.isdir(gettempdir() + self.WORK_DIR + "/new/" + self.index[1][x]) is True: copytree(gettempdir() + self.WORK_DIR + "/new/" + self.index[1][x], gettempdir() + self.WORK_DIR + "/patch/add/" + self.index[1][x])
+
+        for y in range(0, len(self.index[3])):
+            component = Weave.directory_split_recursive(self.index[3][y])
+            for b in component:
+                if path.isdir(gettempdir() + self.WORK_DIR + "/patch/replace/" + b) is False: mkdir(gettempdir() + self.WORK_DIR + "/patch/replace/" + b)
+            if path.isfile(gettempdir() + self.WORK_DIR + "/new/" + self.index[3][y]) is True: copyfile(gettempdir() + self.WORK_DIR + "/new/" + self.index[3][y], gettempdir() + self.WORK_DIR + "/patch/replace/" + self.index[3][y])
+            if path.isdir(gettempdir() + self.WORK_DIR + "/new/" + self.index[3][y]) is True: copytree(gettempdir() + self.WORK_DIR + "/new/" + self.index[3][y], gettempdir() + self.WORK_DIR + "/patch/replace/" + self.index[3][y])
 
         with open(gettempdir() + self.WORK_DIR + "/patch/VERSIONS", "w") as release_version_handle: release_version_handle.write(self.release_version_old + " -> " + self.release_version_new)
         if set_name is None:
             with open(gettempdir() + self.WORK_DIR + "/patch/NAME", "w") as release_name_handle: release_name_handle.write(self.release_name_new)
-            make_archive(root_dir = gettempdir() + self.WORK_DIR + "/patch/", base_dir = output_path, base_name = self.release_name_new + "_" + self.release_name_old + "_to_" + self.release_name_new + "_bandage_patch", format = ".zip")
+            make_archive(root_dir = gettempdir() + self.WORK_DIR + "/patch/", base_name = output_path + self.release_name_new + "_" + self.release_version_old + "_to_" + self.release_version_new + "_bandage_patch", format = "zip")
         else:
             with open(gettempdir() + self.WORK_DIR + "/patch/NAME", "w") as release_name_handle: release_name_handle.write(set_name)
-            make_archive(root_dir = gettempdir() + self.WORK_DIR + "/patch/", base_dir = output_path, base_name = set_name + "_" + self.release_name_old + "_to_" + self.release_name_new + "_bandage_patch", format = ".zip")
+            make_archive(root_dir = gettempdir() + self.WORK_DIR + "/patch/", base_name = output_path + set_name + "_" + self.release_version_old + "_to_" + self.release_version_new + "_bandage_patch", format = "zip")
 
         # TODO archive checksum generation
 
@@ -306,7 +355,7 @@ class Weave:
         Returns generated name.
         :return: str, generated tempdir name
         """
-        identifier = "/bandage_weave_session_" + md5(str(time()).encode(encoding = "ascii", errors = "replace")).decode(encoding = "utf-8", errors = "replace")
+        identifier = "/bandage_weave_session_" + md5(str(time()).encode(encoding = "ascii", errors = "replace")).hexdigest()
         mkdir(gettempdir() + identifier)
         mkdir(gettempdir() + identifier + "/old")
         mkdir(gettempdir() + identifier + "/new")
@@ -328,19 +377,42 @@ class Weave:
         for x in range(0, len(raw)):
             if raw[x][:4] == "diff":
                 if len(raw[x].split(" ")) != 3: raise Exceptions.UnableToParseError("Release archives contain directories with spaces in their names. This breaks comparison interpretation.") from None
-                parsing_directory = raw[x].split(" ")[1].lstrip(gettempdir() + self.WORK_DIR + "/old/")
+                parsing_directory = raw[x].split(" ")[1].lstrip(gettempdir()).lstrip(self.WORK_DIR).lstrip("/old/")
+                if parsing_directory != "": parsing_directory += "/"
             if raw[x][:(8 + len(gettempdir() + self.WORK_DIR + "/old/"))] == "Only in " + gettempdir() + self.WORK_DIR + "/old/":
-                dump[0] = raw[x].lstrip("Only in " + gettempdir() + self.WORK_DIR + "/old/" + parsing_directory).strip("[]").split(", ")
-                for y in range(0, len(dump[0])): dump[0][y] = parsing_directory + dump[0][y].strip("'")
+                for_extend = raw[x].lstrip("Only in " + gettempdir() + self.WORK_DIR + "/old/" + parsing_directory).strip("[]").split(", ")
+                for y in range(0, len(for_extend)): for_extend[y] = parsing_directory + for_extend[y].strip("'")
+                dump[0].extend(for_extend)
             if raw[x][:(8 + len(gettempdir() + self.WORK_DIR + "/new/"))] == "Only in " + gettempdir() + self.WORK_DIR + "/new/":
-                dump[1] = raw[x].lstrip("Only in " + gettempdir() + self.WORK_DIR + "/new/" + parsing_directory).strip("[]").split(", ")
-                for y in range(0, len(dump[1])): dump[1][y] = parsing_directory + dump[1][y].strip("'")
+                for_extend = raw[x].lstrip("Only in " + gettempdir() + self.WORK_DIR + "/new/" + parsing_directory).strip("[]").split(", ")
+                for y in range(0, len(for_extend)): for_extend[y] = parsing_directory + for_extend[y].strip("'")
+                dump[1].extend(for_extend)
             if raw[x][:18] == "Identical files : ":
-                dump[2] = raw[x].lstrip("Identical files : ").strip("[]").split(", ")
-                for y in range(0, len(dump[2])): dump[2][y] = parsing_directory + dump[2][y].strip("'")
+                for_extend = raw[x].lstrip("Identical files : ").strip("[]").split(", ")
+                for y in range(0, len(for_extend)): for_extend[y] = parsing_directory + for_extend[y].strip("'")
+                dump[2].extend(for_extend)
             if raw[x][:18] == "Differing files : ":
-                dump[3] = raw[x].lstrip("Differing files : ").strip("[]").split(", ")
-                for y in range(0, len(dump[3])): dump[3][y] = parsing_directory + dump[3][y].strip("'")
+                for_extend = raw[x].lstrip("Differing files : ").strip("[]").split(", ")
+                for y in range(0, len(for_extend)): for_extend[y] = parsing_directory + for_extend[y].strip("'")
+                dump[3].extend(for_extend)
+        return dump
+
+    @staticmethod
+    def directory_split_recursive(whole: str) -> list:
+        """
+        Takes path parameter and applies path.split recursively, dumps spliced directory tree to return variable.
+        It will produce segmented directories, i.e:
+        /path/to/somewhere/ -> /path/to -> /path/
+        ...Which will be appended to the return list as mentioned previously.
+        :param whole: str, path for splitting into component directories
+        :return: list, contains components
+        """
+        dump = [] # append components to this list, function return
+        previous = "/INITIAL/INITIAL" # remaining path after splitting previous component
+        while path.split(previous)[1] != "":
+            if previous == "/INITIAL/INITIAL": previous = path.split(whole)[0]
+            else: previous = path.split(previous)[0]
+            if previous != "/": dump.append(previous)
         return dump
 
 class Supply:
@@ -369,7 +441,7 @@ class Supply:
         If bandage.Supply succeeded in finding headers and looking up lineage series, however finds no patch available to upgrade with, self.result is 1.
         If bandage.Supply raised an exception, self.result and self.patch_web_source are None.
 
-        Preliminary information if obtained is dumped into self.preliminary_dump. Contains version list and patches available, as list object. Retrieved through bandage.Supply.pre_collect.
+        Preliminary information if obtained is dumped into self.pre_collect. Contains version list and patches available, as list object. Retrieved through bandage.Supply.pre_collect_dump.
 
         See documentation for more information.
 
@@ -379,6 +451,9 @@ class Supply:
         :param version_file: str, path to version file
         """
         self.urllib3_pool_manager = urllib3.PoolManager()
+
+        self.patch_web_source = None
+        self.result = 1
 
         self.remote = remote
         self.version_file = version_file
@@ -392,8 +467,8 @@ class Supply:
         if self.remote[-1:] != "/": self.remote += "/"
 
         if "https://github.com" == self.remote[:18] or "http://github.com" == self.remote[:18]:
-            if self.remote[-18] == "/releases/BANDAGE/":
-                self.pre_collect = [Supply.fetch(self, self.remote.rstrip("/BANDAGE/") + "/download/BANDAGE/BANDAGE_PATCHES").data.decode(encoding = "utf-8", errors = "replace").split("\n"), Supply.fetch(self, self.remote.rstrip("/BANDAGE/") + "/download/BANDAGE/BANDAGE_LINEAGE").data.decode(encoding = "utf-8", errors = "replace").split("\n")]
+            if self.remote[-22:] == "/releases/tag/BANDAGE/":
+                self.pre_collect = [Supply.fetch(self, self.remote.rstrip("/tag/BANDAGE/") + "/download/BANDAGE/BANDAGE_PATCHES").data.decode(encoding = "utf-8", errors = "replace").split("\n"), Supply.fetch(self, self.remote.rstrip("/tag/BANDAGE/") + "/download/BANDAGE/BANDAGE_LINEAGE").data.decode(encoding = "utf-8", errors = "replace").split("\n")]
                 for x in range(0, len(self.pre_collect[1])):
                     if self.version == self.pre_collect[1][x]:
                         self.version_gap = x
@@ -406,11 +481,11 @@ class Supply:
                         if self.pre_collect[0][x].split("||")[0].split(" -> ")[0] == self.version: compatible_sources.append(self.pre_collect[0][x].split("||")[0])
                     if not compatible_sources: self.result = 1
                     else:
-                        for x in range(0, self.version_gap):
+                        for x in self.pre_collect[0]:
                             for y in compatible_sources:
-                                if y.split(" -> ")[1] == self.pre_collect[x]:
+                                if y.split(" -> ")[1] == x.split("||")[0].split(" -> ")[1]:
                                     self.result = -1
-                                    self.patch_web_source = self.remote.rstrip("/BANDAGE/") + "/download/BANDAGE/" + self.pre_collect[0][x].split("||")[1]
+                                    self.patch_web_source = self.remote.rstrip("/BANDAGE/") + path.join("/download/BANDAGE/", x.split("||")[1])
             else: raise Exceptions.RemoteNotSupported("Remote defined as " + self.remote + " is not supported.")
         else:
             self.pre_collect = [Supply.fetch(self, self.remote + "BANDAGE_PATCHES").data.decode(encoding = "utf-8", errors = "replace").split("\n"), Supply.fetch(self, self.remote + "BANDAGE_LINEAGE").data.decode(encoding = "utf-8", errors = "replace").split("\n")]
@@ -426,14 +501,12 @@ class Supply:
                     if self.pre_collect[0][x].split("||")[0].split(" -> ")[0] == self.version: compatible_sources.append(self.pre_collect[0][x].split("||")[0])
                 if not compatible_sources: self.result = 1
                 else:
-                    for x in range(0, self.version_gap):
+                    for x in self.pre_collect[0]:
                         for y in compatible_sources:
-                            if y.split(" -> ")[1] == self.pre_collect[x]:
+                            if y.split(" -> ")[1] == x.split("||")[0].split(" -> ")[1]:
                                 self.result = -1
-                                if self.pre_collect[0][x].split("||")[1][:8] == "https://" or "http://" in self.pre_collect[0][x].split("||")[1][:8]: self.patch_web_source = self.pre_collect[0][x].split("||")[1]
-                                else:
-                                    if self.pre_collect[0][x].split("||")[1][:1] != "/": self.remote = self.remote.rstrip("/")
-                                    self.patch_web_source = self.remote + self.pre_collect[0][x].split("||")[1]
+                                if x.split("||")[1][:8] == "https://" or "http://" in x.split("||")[1][:8]: self.patch_web_source = x.split("||")[1]
+                                else: self.patch_web_source = path.join(self.remote, x.split("||")[1])
 
     def fetch(self, target: str) -> object:
         """
@@ -444,3 +517,17 @@ class Supply:
         fetch_request = self.urllib3_pool_manager.request("GET", target)
         if str(fetch_request.status)[:1] is not "2" and fetch_request.status not in [301, 302]: raise Exceptions.FetchError("Failed to fetch resource, returned status code " + str(fetch_request.status) + ".") from None
         else: return fetch_request
+
+    def realize(self) -> list:
+        """
+        Returns list containing self.result and self.patch_web_source.
+        :return: list, [self.result, self.patch_web_source]
+        """
+        return [self.result, self.patch_web_source]
+
+    def pre_collect_dump(self) -> list:
+        """
+        Returns self.pre_collect_dump.
+        :return: list, pre_collect_dump
+        """
+        return self.pre_collect
