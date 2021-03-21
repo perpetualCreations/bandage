@@ -3,9 +3,6 @@
 
 A Python patching library for updating software applications in deployments where package managers are unavailable.
 
-## Documentation
-To see documentation regarding installation and usage, please visit [https://dreamerslegacy.xyz/projects/bandage/docs.html](https://dreamerslegacy.xyz/prjects/bandage/docs.html).
-
 ## Releases & Dist.
 With the released wheel file, after downloading:
 ```commandline
