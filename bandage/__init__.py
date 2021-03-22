@@ -40,6 +40,7 @@ class Backend:
     def fetch(target: str) -> object:
         """
         Fetches HTTP and HTTPS requests through URLLIB3, returns request object, raises exception if status is not in 2XX or 301, 302.
+
         :param target: str, HTTPS/HTTP address
         :return: object
         """
@@ -55,6 +56,7 @@ class Backend:
         It will produce segmented directories, i.e:
         /path/to/somewhere/ -> /path/to -> /path/
         ...Which will be appended to the return list as mentioned previously.
+
         :param whole: str, path for splitting into component directories
         :return: list, contains components
         """
@@ -106,6 +108,7 @@ class Patcher:
     def __init__(self, patch: str, target: str, suppress_version_check: bool = False, suppress_name_check: bool = False, skip_keep_check: bool = False):
         """
         Takes patch file and target application directory, and applies changes after checking VERSION and NAME. Inorganic and for robots.
+
         :param patch: str, web address or path to patch file
         :param target: str, path to application directory for patching
         :param suppress_version_check: bool, if True VERSION/VERSIONS check is ignored, unsafe, default is False
@@ -207,6 +210,7 @@ class Weave:
     def __init__(self, release_old: str, release_new: str, output_path: str, set_name: Union[str, None] = None, suppress_missing_versions: bool = False):
         """
         Takes two release files, and compares them for differences, then generates patch file to given output path. Inorganic and for robots.
+
         :param release_old: str, web address or path to old release file
         :param release_new: str, web address or path to new release file
         :param output_path: str, path to output archive, if archive already exists, deletes archive and "overwrites" it with the new archive file
