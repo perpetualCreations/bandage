@@ -111,6 +111,9 @@ If you want to point bandage.Supply to a Github repository's contents, use raw.g
 
 Bandage API
 ===========
+
+API
+---
 Details API structures under parent bandage.* and their usage.
 
 Front-Facing
