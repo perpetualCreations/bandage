@@ -4,7 +4,7 @@ import test for bandage.
 
 import bandage
 try:
-    raise bandage.Exceptions.MissingVersionsError("test")
-except bandage.Exceptions.MissingVersionsError:
+    raise bandage.Exceptions.TargetError("test")
+except bandage.Exceptions.TargetError:
     print("test")
 pass
