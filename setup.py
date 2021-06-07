@@ -1,7 +1,7 @@
 """
-bandage, v1.0
-Made by perpetualCreations
+bandage, v1.0.
 
+Made by perpetualCreations
 setup.py, packaging script for setuptools
 """
 
@@ -15,7 +15,7 @@ with open("requirements.txt") as rh:
 
 setuptools.setup(
     name="bandage",
-    version="1.1",
+    version="1.2",
     author="perpetualCreations",
     author_email="tchen0584@gmail.com",
     description="Patching library.",

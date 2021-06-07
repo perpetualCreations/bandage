@@ -1,0 +1,8 @@
+.vscode/
+.vscode/*
+
+.idea/
+.idea/*
+
+bandage/__pycache__/
+bandage/__pycache__/*

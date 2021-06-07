@@ -1,3 +1,4 @@
+LICENSE
 README.md
 setup.py
 bandage/__init__.py
